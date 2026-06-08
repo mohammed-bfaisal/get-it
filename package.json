@@ -18,6 +18,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:provider-settings": "tsx --test scripts/provider-settings.test.ts",
     "generate-pdfs": "tsx scripts/generate-sample-pdfs.ts",
     "smoke": "node scripts/smoke-test.mjs",
     "smoke-all": "node scripts/full-test.mjs",

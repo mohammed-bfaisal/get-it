@@ -24,6 +24,7 @@ type AccountSnapshot = {
     model: string;
     baseUrl: string;
     apiKeyConfigured: boolean;
+    apiKeySource: "local" | "environment" | null;
   };
   account: {
     email: string | null;
@@ -168,6 +169,13 @@ function AccountPanel({ refreshKey }: { refreshKey: string }) {
   }, [data?.provider, loggingOut]);
 
   const isOpenRouter = data?.provider === "openrouter";
+  const openRouterKeyStatus = (() => {
+    const info = data?.openRouter;
+    if (!info?.apiKeyConfigured) return "missing";
+    return info.apiKeySource === "environment"
+      ? "configured from environment"
+      : "saved locally";
+  })();
 
   return (
     <div className="px-3 py-2.5">
@@ -211,7 +219,7 @@ function AccountPanel({ refreshKey }: { refreshKey: string }) {
                 OpenRouter API key
               </p>
               <p className="truncate text-[10.5px] text-[var(--ink-500)]">
-                {data.openRouter.apiKeyConfigured ? "configured" : "missing"}
+                {openRouterKeyStatus}
               </p>
             </div>
           </div>

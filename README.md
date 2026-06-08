@@ -129,6 +129,8 @@ OPENROUTER_MODEL=openai/gpt-4o-mini
 
 OpenRouter mode uses structured JSON-schema responses through `/api/v1/chat/completions`. Chat is rebuilt from the local per-document history on each turn because OpenRouter does not persist Codex-style thread IDs.
 
+You can also set OpenRouter from the local app UI: open Settings, choose OpenRouter, paste your key, and enter any custom OpenRouter model slug. The key is saved to the app's local `settings.json` under the Get It. data directory and is not returned by `/api/settings`; the UI only receives whether a key is configured and whether it came from local settings or the shell environment.
+
 Personal-use note: this OpenRouter setup is currently meant for a single-user local install where you control the machine and the key. If this ever becomes a shared or distributed build, move key entry into a local settings screen backed by OS credential storage instead of relying on shell or `.env.local` secrets.
 
 For browser-side hot reload:

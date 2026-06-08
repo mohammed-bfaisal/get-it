@@ -50,11 +50,26 @@ function configuredAiProvider() {
     .toLowerCase();
 }
 
+function localSettingsOpenRouterState() {
+  try {
+    const settingsPath = path.join(app.getPath("userData"), "settings.json");
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    const provider = String(parsed?.aiProvider || "").trim().toLowerCase();
+    const apiKey = String(parsed?.openRouter?.apiKey || "").trim();
+    return { provider, apiKeyConfigured: !!apiKey };
+  } catch {
+    return { provider: "", apiKeyConfigured: false };
+  }
+}
+
 function usesOpenRouterProvider() {
   const explicit = configuredAiProvider();
   if (explicit === "openrouter") return true;
   if (explicit === "codex") return false;
-  return !!String(process.env.OPENROUTER_API_KEY || "").trim();
+  const local = localSettingsOpenRouterState();
+  if (local.provider === "openrouter") return true;
+  if (local.provider === "codex") return false;
+  return local.apiKeyConfigured || !!String(process.env.OPENROUTER_API_KEY || "").trim();
 }
 
 // ── Platform target triple (same table as @openai/codex-sdk) ────────────

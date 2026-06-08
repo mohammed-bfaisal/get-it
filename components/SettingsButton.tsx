@@ -12,14 +12,39 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings2 } from "lucide-react";
+import { Check, KeyRound, Settings2, Trash2 } from "lucide-react";
 import { AUTO_GENERATE_VIZ, MAX_VIZ_GEN_RETRIES } from "@/lib/config";
 import { APP_VERSION } from "@/lib/version";
+
+type AiProviderPreference = "auto" | "codex" | "openrouter";
+type AiProvider = "codex" | "openrouter";
+type OpenRouterKeySource = "local" | "environment" | null;
 
 export type SettingsPayload = {
   autoGenerate: boolean;
   maxRetries: number;
+  aiProvider: AiProviderPreference;
+  resolvedProvider: AiProvider;
+  openRouter: {
+    model: string;
+    baseUrl: string;
+    maxTokens: number | null;
+    apiKeyConfigured: boolean;
+    apiKeySource: OpenRouterKeySource;
+  };
 };
+
+type SettingsUpdate = Partial<
+  Omit<SettingsPayload, "openRouter" | "resolvedProvider"> & {
+    openRouter: Partial<{
+      apiKey: string;
+      clearApiKey: boolean;
+      model: string;
+      baseUrl: string;
+      maxTokens: number | null;
+    }>;
+  }
+>;
 
 export const SETTINGS_EVENT = "getit:settings";
 
@@ -81,7 +106,42 @@ export default function SettingsButton() {
 function SettingsPanel({ refreshKey }: { refreshKey: string }) {
   const [autoGenerate, setAutoGenerate] = useState<boolean>(AUTO_GENERATE_VIZ);
   const [maxRetries, setMaxRetries] = useState<number>(MAX_VIZ_GEN_RETRIES);
+  const [aiProvider, setAiProvider] = useState<AiProviderPreference>("auto");
+  const [resolvedProvider, setResolvedProvider] = useState<AiProvider>("codex");
+  const [openRouterModel, setOpenRouterModel] = useState("openai/gpt-4o-mini");
+  const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState(
+    "https://openrouter.ai/api/v1",
+  );
+  const [openRouterMaxTokens, setOpenRouterMaxTokens] = useState("");
+  const [openRouterKey, setOpenRouterKey] = useState("");
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [apiKeySource, setApiKeySource] = useState<OpenRouterKeySource>(null);
+  const [savingOpenRouter, setSavingOpenRouter] = useState(false);
   const hydratedRef = useRef(false);
+
+  const applySettings = useCallback((s: SettingsPayload) => {
+    if (typeof s.autoGenerate === "boolean") setAutoGenerate(s.autoGenerate);
+    if (typeof s.maxRetries === "number") setMaxRetries(s.maxRetries);
+    if (s.aiProvider === "auto" || s.aiProvider === "codex" || s.aiProvider === "openrouter") {
+      setAiProvider(s.aiProvider);
+    }
+    if (s.resolvedProvider === "codex" || s.resolvedProvider === "openrouter") {
+      setResolvedProvider(s.resolvedProvider);
+    }
+    if (s.openRouter) {
+      if (typeof s.openRouter.model === "string") setOpenRouterModel(s.openRouter.model);
+      if (typeof s.openRouter.baseUrl === "string") {
+        setOpenRouterBaseUrl(s.openRouter.baseUrl);
+      }
+      setOpenRouterMaxTokens(
+        typeof s.openRouter.maxTokens === "number"
+          ? String(s.openRouter.maxTokens)
+          : "",
+      );
+      setApiKeyConfigured(!!s.openRouter.apiKeyConfigured);
+      setApiKeySource(s.openRouter.apiKeySource ?? null);
+    }
+  }, []);
 
   // Fetch fresh on every popover open so external changes (CLI edits,
   // a previous run-through-the-wizard, etc.) show up.
@@ -93,8 +153,8 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
       .then((r) => r.json())
       .then((s: SettingsPayload) => {
         if (cancelled) return;
-        if (typeof s.autoGenerate === "boolean") setAutoGenerate(s.autoGenerate);
-        if (typeof s.maxRetries === "number") setMaxRetries(s.maxRetries);
+        applySettings(s);
+        setOpenRouterKey("");
         hydratedRef.current = true;
       })
       .catch(() => {
@@ -103,11 +163,11 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [applySettings, refreshKey]);
 
-  const persist = useCallback((delta: Partial<SettingsPayload>) => {
+  const persist = useCallback((delta: SettingsUpdate) => {
     if (!hydratedRef.current) return;
-    void fetch("/api/settings", {
+    return fetch("/api/settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(delta),
@@ -115,6 +175,7 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
     })
       .then((r) => r.json())
       .then((next: SettingsPayload) => {
+        applySettings(next);
         // Broadcast so siblings on this page (the viewer) can react.
         try {
           window.dispatchEvent(
@@ -125,7 +186,7 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [applySettings]);
 
   const onAutoGenerate = useCallback(
     (v: boolean) => {
@@ -144,6 +205,48 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
     [persist],
   );
 
+  const onProvider = useCallback(
+    (v: AiProviderPreference) => {
+      setAiProvider(v);
+      persist({ aiProvider: v });
+    },
+    [persist],
+  );
+
+  const saveOpenRouter = useCallback(async () => {
+    setSavingOpenRouter(true);
+    const n = Number(openRouterMaxTokens);
+    const maxTokens =
+      openRouterMaxTokens.trim() && Number.isFinite(n) && n > 0
+        ? Math.floor(n)
+        : null;
+    await persist({
+      aiProvider,
+      openRouter: {
+        ...(openRouterKey.trim() ? { apiKey: openRouterKey } : {}),
+        model: openRouterModel,
+        baseUrl: openRouterBaseUrl,
+        maxTokens,
+      },
+    });
+    setOpenRouterKey("");
+    setSavingOpenRouter(false);
+  }, [
+    aiProvider,
+    openRouterBaseUrl,
+    openRouterKey,
+    openRouterMaxTokens,
+    openRouterModel,
+    persist,
+  ]);
+
+  const clearOpenRouterKey = useCallback(async () => {
+    setSavingOpenRouter(true);
+    await persist({ openRouter: { clearApiKey: true } });
+    setOpenRouterKey("");
+    setSavingOpenRouter(false);
+  }, [persist]);
+
   return (
     <>
       <div className="border-b border-[var(--border-subtle)] px-3 py-2">
@@ -161,6 +264,135 @@ function SettingsPanel({ refreshKey }: { refreshKey: string }) {
         <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-400)]">
           Saved automatically. Your choice survives app restarts.
         </p>
+      </div>
+
+      {/* AI provider */}
+      <div className="border-b border-[var(--border-subtle)] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[12.5px] font-medium text-[var(--ink-900)]">
+              AI provider
+            </p>
+            <p className="text-[11px] leading-relaxed text-[var(--ink-500)]">
+              Active: {resolvedProvider === "openrouter" ? "OpenRouter" : "Codex"}
+            </p>
+          </div>
+          <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-white text-[10.5px] font-medium">
+            {(["auto", "codex", "openrouter"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onProvider(value)}
+                className={`px-2 py-1 transition ${
+                  aiProvider === value
+                    ? "bg-[var(--accent-600)] text-white"
+                    : "text-[var(--ink-600)] hover:bg-[var(--surface-sunken)]"
+                }`}
+              >
+                {value === "auto"
+                  ? "Auto"
+                  : value === "codex"
+                    ? "Codex"
+                    : "OpenRouter"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-2 space-y-2 rounded-md bg-[var(--surface-sunken)] px-2 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-[var(--ink-800)]">
+                OpenRouter key
+              </p>
+              <p className="truncate text-[10.5px] text-[var(--ink-500)]">
+                {apiKeyConfigured
+                  ? apiKeySource === "environment"
+                    ? "configured from environment"
+                    : "saved locally"
+                  : "missing"}
+              </p>
+            </div>
+            {apiKeyConfigured && apiKeySource === "local" && (
+              <button
+                type="button"
+                onClick={clearOpenRouterKey}
+                disabled={savingOpenRouter}
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-white text-[var(--ink-500)] transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                aria-label="Clear saved OpenRouter key"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-1.5">
+            <div className="relative min-w-0 flex-1">
+              <KeyRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-400)]" />
+              <input
+                type="password"
+                value={openRouterKey}
+                onChange={(e) => setOpenRouterKey(e.target.value)}
+                placeholder={
+                  apiKeyConfigured ? "Paste a replacement key" : "sk-or-..."
+                }
+                className="h-8 w-full rounded-md border border-[var(--border-subtle)] bg-white pl-7 pr-2 text-[12px] text-[var(--ink-900)] focus:border-[var(--accent-500)] focus:outline-none"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={saveOpenRouter}
+              disabled={savingOpenRouter}
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-[var(--accent-600)] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[var(--accent-700)] disabled:opacity-60"
+            >
+              <Check className="h-3.5 w-3.5" />
+              Save
+            </button>
+          </div>
+
+          <label className="block">
+            <span className="text-[10.5px] font-medium text-[var(--ink-600)]">
+              Model slug
+            </span>
+            <input
+              type="text"
+              value={openRouterModel}
+              onChange={(e) => setOpenRouterModel(e.target.value)}
+              onBlur={() => void saveOpenRouter()}
+              className="mt-1 h-8 w-full rounded-md border border-[var(--border-subtle)] bg-white px-2 text-[12px] text-[var(--ink-900)] focus:border-[var(--accent-500)] focus:outline-none"
+            />
+          </label>
+
+          <div className="grid grid-cols-[minmax(0,1fr)_5.75rem] gap-1.5">
+            <label className="block min-w-0">
+              <span className="text-[10.5px] font-medium text-[var(--ink-600)]">
+                Endpoint
+              </span>
+              <input
+                type="text"
+                value={openRouterBaseUrl}
+                onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
+                onBlur={() => void saveOpenRouter()}
+                className="mt-1 h-8 w-full rounded-md border border-[var(--border-subtle)] bg-white px-2 text-[12px] text-[var(--ink-900)] focus:border-[var(--accent-500)] focus:outline-none"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[10.5px] font-medium text-[var(--ink-600)]">
+                Max tokens
+              </span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={openRouterMaxTokens}
+                onChange={(e) => setOpenRouterMaxTokens(e.target.value)}
+                onBlur={() => void saveOpenRouter()}
+                placeholder="auto"
+                className="mt-1 h-8 w-full rounded-md border border-[var(--border-subtle)] bg-white px-2 text-right text-[12px] text-[var(--ink-900)] focus:border-[var(--accent-500)] focus:outline-none"
+              />
+            </label>
+          </div>
+        </div>
       </div>
 
       {/* Auto-generate toggle */}

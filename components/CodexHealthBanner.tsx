@@ -129,7 +129,7 @@ export default function CodexHealthBanner() {
         : "We can't find the Codex CLI binary. Open the setup wizard to install it.";
     if (isOpenRouter) {
       body =
-        "Set OPENROUTER_API_KEY in .env.local or your shell environment, then restart Get It.";
+        "Open Settings and save an OpenRouter key, or set OPENROUTER_API_KEY in your shell environment.";
     }
     action = (
       <button

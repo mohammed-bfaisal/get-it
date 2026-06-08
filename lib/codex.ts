@@ -18,42 +18,33 @@
 import { Codex } from "@openai/codex-sdk";
 import type { ThreadOptions } from "@openai/codex-sdk";
 import { CODEX_SCRATCH_DIR } from "./paths";
+import {
+  resolveAiProvider,
+  resolveOpenRouterSettings,
+  type AiProvider,
+  type OpenRouterKeySource,
+} from "./settings-store";
 
-export type AiProvider = "codex" | "openrouter";
+export type { AiProvider } from "./settings-store";
 
-const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_OPENROUTER_TITLE = "Get It";
 
 let _codex: Codex | null = null;
 
-function configuredProvider(): string {
-  return (
-    process.env.GETIT_AI_PROVIDER ??
-    process.env.GETIT_LLM_PROVIDER ??
-    ""
-  )
-    .trim()
-    .toLowerCase();
-}
-
 function openRouterApiKey(): string {
-  return (process.env.OPENROUTER_API_KEY ?? "").trim();
+  return resolveOpenRouterSettings().apiKey;
 }
 
 export function getAiProvider(): AiProvider {
-  const explicit = configuredProvider();
-  if (explicit === "openrouter") return "openrouter";
-  if (explicit === "codex") return "codex";
-  return openRouterApiKey() ? "openrouter" : "codex";
+  return resolveAiProvider();
 }
 
 function openRouterModel(): string {
-  return (process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL).trim();
+  return resolveOpenRouterSettings().model;
 }
 
 function openRouterBaseUrl(): string {
-  return (process.env.OPENROUTER_BASE_URL ?? DEFAULT_OPENROUTER_BASE_URL).trim();
+  return resolveOpenRouterSettings().baseUrl;
 }
 
 function openRouterChatUrl(): string {
@@ -64,10 +55,7 @@ function openRouterChatUrl(): string {
 }
 
 function openRouterMaxTokens(): number | undefined {
-  const raw = (process.env.OPENROUTER_MAX_TOKENS ?? "").trim();
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+  return resolveOpenRouterSettings().maxTokens ?? undefined;
 }
 
 function safeHeaderValue(value: string): string {
@@ -78,13 +66,16 @@ export type OpenRouterRuntimeInfo = {
   model: string;
   baseUrl: string;
   apiKeyConfigured: boolean;
+  apiKeySource: OpenRouterKeySource;
 };
 
 export function getOpenRouterRuntimeInfo(): OpenRouterRuntimeInfo {
+  const openRouter = resolveOpenRouterSettings();
   return {
-    model: openRouterModel(),
-    baseUrl: openRouterBaseUrl(),
-    apiKeyConfigured: !!openRouterApiKey(),
+    model: openRouter.model,
+    baseUrl: openRouter.baseUrl,
+    apiKeyConfigured: openRouter.apiKeyConfigured,
+    apiKeySource: openRouter.apiKeySource,
   };
 }
 
@@ -369,7 +360,7 @@ function requireOpenRouterApiKey(): string {
   if (!key) {
     throw new CodexError(
       "auth_lost",
-      "OPENROUTER_API_KEY is not set. Add it to .env.local or your shell environment and restart Get It.",
+      "OpenRouter API key is not set. Save one in Settings, or set OPENROUTER_API_KEY in your shell environment.",
     );
   }
   return key;
