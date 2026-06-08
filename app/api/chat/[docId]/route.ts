@@ -152,8 +152,9 @@ export async function POST(
         // Rate-limit / auth / binary: let the health banner take over.
         if (e instanceof CodexError && e.kind !== "generic") throw e;
         // Generic failure (e.g. the session expired / was evicted from
-        // ~/.codex/sessions): fall through and rebuild a fresh thread with
-        // full context so the answer never silently degrades.
+        // ~/.codex/sessions, or OpenRouter reported that it is stateless):
+        // fall through and rebuild with full local context so the answer never
+        // silently degrades.
         reply = null;
       }
     }

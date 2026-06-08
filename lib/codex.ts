@@ -19,7 +19,74 @@ import { Codex } from "@openai/codex-sdk";
 import type { ThreadOptions } from "@openai/codex-sdk";
 import { CODEX_SCRATCH_DIR } from "./paths";
 
+export type AiProvider = "codex" | "openrouter";
+
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_OPENROUTER_TITLE = "Get It";
+
 let _codex: Codex | null = null;
+
+function configuredProvider(): string {
+  return (
+    process.env.GETIT_AI_PROVIDER ??
+    process.env.GETIT_LLM_PROVIDER ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function openRouterApiKey(): string {
+  return (process.env.OPENROUTER_API_KEY ?? "").trim();
+}
+
+export function getAiProvider(): AiProvider {
+  const explicit = configuredProvider();
+  if (explicit === "openrouter") return "openrouter";
+  if (explicit === "codex") return "codex";
+  return openRouterApiKey() ? "openrouter" : "codex";
+}
+
+function openRouterModel(): string {
+  return (process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL).trim();
+}
+
+function openRouterBaseUrl(): string {
+  return (process.env.OPENROUTER_BASE_URL ?? DEFAULT_OPENROUTER_BASE_URL).trim();
+}
+
+function openRouterChatUrl(): string {
+  const base = openRouterBaseUrl()
+    .replace(/\/chat\/completions\/?$/i, "")
+    .replace(/\/$/, "");
+  return `${base}/chat/completions`;
+}
+
+function openRouterMaxTokens(): number | undefined {
+  const raw = (process.env.OPENROUTER_MAX_TOKENS ?? "").trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+function safeHeaderValue(value: string): string {
+  return value.replace(/[^\x20-\x7E]/g, "").slice(0, 240);
+}
+
+export type OpenRouterRuntimeInfo = {
+  model: string;
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+};
+
+export function getOpenRouterRuntimeInfo(): OpenRouterRuntimeInfo {
+  return {
+    model: openRouterModel(),
+    baseUrl: openRouterBaseUrl(),
+    apiKeyConfigured: !!openRouterApiKey(),
+  };
+}
 
 function getCodex(): Codex {
   if (_codex) return _codex;
@@ -120,6 +187,7 @@ export class CodexError extends Error {
 // still active — no point hammering the API.
 export type CodexHealth = {
   ok: boolean;
+  provider: AiProvider;
   kind: CodexErrorKind | null;
   message: string | null;
   retryAt: number | null;
@@ -138,6 +206,7 @@ declare global {
 
 const _initialHealth: CodexHealth = {
   ok: true,
+  provider: getAiProvider(),
   kind: null,
   message: null,
   retryAt: null,
@@ -151,6 +220,7 @@ const health: CodexHealth =
   (globalThis.__getitCodexHealth = { ..._initialHealth });
 
 export function getCodexHealth(): CodexHealth {
+  health.provider = getAiProvider();
   // If a rate-limit retry deadline has passed, auto-clear so the UI
   // stops showing the banner without a server round-trip.
   if (
@@ -167,12 +237,14 @@ function markOk() {
   if (!health.ok) {
     Object.assign(health, _initialHealth, { serial: health.serial + 1 });
   }
+  health.provider = getAiProvider();
   health.lastOkAt = Date.now();
   health.ok = true;
 }
 
 function markError(err: CodexError) {
   health.ok = false;
+  health.provider = getAiProvider();
   health.kind = err.kind;
   health.message = err.message;
   health.retryAt = err.retryAt ?? null;
@@ -246,6 +318,181 @@ export function classifyCodexError(err: unknown): CodexError {
   return new CodexError("generic", msg);
 }
 
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Date.now() + seconds * 1000;
+  }
+  const absolute = Date.parse(value);
+  return Number.isFinite(absolute) ? absolute : undefined;
+}
+
+function openRouterErrorMessage(status: number, bodyText: string): string {
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      error?: { message?: unknown; code?: unknown };
+    };
+    const message = parsed.error?.message;
+    const code = parsed.error?.code;
+    if (typeof message === "string" && typeof code === "string") {
+      return `OpenRouter ${status} (${code}): ${message}`;
+    }
+    if (typeof message === "string") return `OpenRouter ${status}: ${message}`;
+  } catch {
+    /* use the raw body below */
+  }
+  const tail = bodyText.trim().slice(0, 800);
+  return tail ? `OpenRouter ${status}: ${tail}` : `OpenRouter ${status}`;
+}
+
+function classifyOpenRouterResponse(
+  status: number,
+  bodyText: string,
+  retryAfter: string | null,
+): CodexError {
+  const message = openRouterErrorMessage(status, bodyText);
+  if (status === 401 || status === 403) {
+    return new CodexError("auth_lost", message);
+  }
+  if (status === 429) {
+    return new CodexError("rate_limit", message, {
+      retryAt: parseRetryAfter(retryAfter),
+      window: "unknown",
+    });
+  }
+  return classifyCodexError(message);
+}
+
+function requireOpenRouterApiKey(): string {
+  const key = openRouterApiKey();
+  if (!key) {
+    throw new CodexError(
+      "auth_lost",
+      "OPENROUTER_API_KEY is not set. Add it to .env.local or your shell environment and restart Get It.",
+    );
+  }
+  return key;
+}
+
+function openRouterContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const record = part as Record<string, unknown>;
+        if (typeof record.text === "string") return record.text;
+        if (typeof record.content === "string") return record.content;
+        return "";
+      })
+      .join("");
+  }
+  if (content && typeof content === "object") return JSON.stringify(content);
+  return "";
+}
+
+async function requestOpenRouterJson<T>(
+  prompt: string,
+  outputSchema: object,
+  opts: RunOptions,
+): Promise<{ data: T; usage: unknown }> {
+  const apiKey = requireOpenRouterApiKey();
+  const maxTokens = openRouterMaxTokens();
+  const plugins = [
+    ...(opts.webSearch ? [{ id: "web" }] : []),
+    { id: "response-healing" },
+  ];
+  const referer = (
+    process.env.OPENROUTER_HTTP_REFERER ??
+    process.env.OPENROUTER_REFERER ??
+    "https://github.com/beltromatti/get-it"
+  ).trim();
+  const title = (
+    process.env.OPENROUTER_APP_TITLE ??
+    process.env.OPENROUTER_TITLE ??
+    DEFAULT_OPENROUTER_TITLE
+  ).trim();
+
+  const response = await fetch(openRouterChatUrl(), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": safeHeaderValue(referer),
+      "X-OpenRouter-Title": safeHeaderValue(title),
+    },
+    signal: opts.signal,
+    body: JSON.stringify({
+      model: openRouterModel(),
+      messages: [{ role: "user", content: prompt }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "get_it_response",
+          strict: true,
+          schema: outputSchema,
+        },
+      },
+      provider: { require_parameters: true },
+      plugins,
+      stream: false,
+      temperature: 0.2,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    }),
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw classifyOpenRouterResponse(
+      response.status,
+      bodyText,
+      response.headers.get("retry-after"),
+    );
+  }
+  let body: {
+    choices?: Array<{ message?: { content?: unknown } }>;
+    usage?: unknown;
+  };
+  try {
+    body = JSON.parse(bodyText) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+      usage?: unknown;
+    };
+  } catch (err) {
+    throw new Error(`OpenRouter returned non-JSON response: ${(err as Error).message}`);
+  }
+  const finalResponse = openRouterContentToText(body.choices?.[0]?.message?.content);
+  return { data: parseTurnJson<T>(finalResponse), usage: body.usage ?? null };
+}
+
+async function runOpenRouterJson<T>(
+  prompt: string,
+  outputSchema: object,
+  opts: RunOptions = {},
+): Promise<{ data: T; usage: unknown }> {
+  const preflight = preflightHealth();
+  if (preflight) throw preflight;
+
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await requestOpenRouterJson<T>(prompt, outputSchema, opts);
+      markOk();
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const classified = err instanceof CodexError ? err : classifyCodexError(err);
+      if (classified.kind !== "generic") {
+        markError(classified);
+        throw classified;
+      }
+    }
+  }
+  const finalErr = classifyCodexError(lastErr);
+  if (finalErr.kind !== "generic") markError(finalErr);
+  throw finalErr;
+}
+
 /**
  * Run a single turn that must return JSON conforming to the supplied schema.
  * Retries once if the model returns un-parseable text. Throws CodexError on
@@ -256,6 +503,9 @@ export async function runJson<T>(
   outputSchema: object,
   opts: RunOptions = {},
 ): Promise<{ data: T; usage: unknown }> {
+  if (getAiProvider() === "openrouter") {
+    return runOpenRouterJson<T>(prompt, outputSchema, opts);
+  }
   // Short-circuit: if we know we're inside a rate-limit window, fail fast
   // without burning another Codex call.
   const preflight = preflightHealth();
@@ -313,6 +563,22 @@ export async function runJsonInThread<T>(args: {
   resume?: { threadId: string; input: string };
   start?: { input: string };
 }): Promise<{ data: T; usage: unknown; threadId: string | null }> {
+  if (getAiProvider() === "openrouter") {
+    if (args.resume) {
+      throw new CodexError(
+        "generic",
+        "OpenRouter transport is stateless; rebuild the conversation from local history.",
+      );
+    }
+    if (!args.start) throw new Error("runJsonInThread: provide `start` or `resume`");
+    const { data, usage } = await runOpenRouterJson<T>(
+      args.start.input,
+      args.outputSchema,
+      args.opts ?? {},
+    );
+    return { data, usage, threadId: null };
+  }
+
   const preflight = preflightHealth();
   if (preflight) throw preflight;
   const opts = args.opts ?? {};

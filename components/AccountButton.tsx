@@ -19,6 +19,12 @@ import {
 } from "lucide-react";
 
 type AccountSnapshot = {
+  provider?: "codex" | "openrouter";
+  openRouter?: {
+    model: string;
+    baseUrl: string;
+    apiKeyConfigured: boolean;
+  };
   account: {
     email: string | null;
     name: string | null;
@@ -80,7 +86,7 @@ export default function AccountButton() {
         </button>
         {!open && (
           <span className="viz-tooltip" role="tooltip">
-            Your ChatGPT account, usage limits and sign-out.
+            AI provider, usage limits and sign-out.
           </span>
         )}
       </span>
@@ -137,6 +143,7 @@ function AccountPanel({ refreshKey }: { refreshKey: string }) {
 
   const handleLogout = useCallback(async () => {
     if (loggingOut) return;
+    if (data?.provider === "openrouter") return;
     if (
       !confirm(
         "Sign out of Codex? Your library and study data stay on this device.",
@@ -158,14 +165,17 @@ function AccountPanel({ refreshKey }: { refreshKey: string }) {
       }
     }
     setLoggingOut(false);
-  }, [loggingOut]);
+  }, [data?.provider, loggingOut]);
+
+  const isOpenRouter = data?.provider === "openrouter";
 
   return (
     <div className="px-3 py-2.5">
       <div className="flex items-center justify-between">
         <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--ink-500)]">
-          ChatGPT account
+          {isOpenRouter ? "OpenRouter provider" : "ChatGPT account"}
         </p>
+        {!isOpenRouter && (
         <button
           type="button"
           onClick={handleLogout}
@@ -180,20 +190,49 @@ function AccountPanel({ refreshKey }: { refreshKey: string }) {
           )}
           {loggingOut ? "signing out…" : "Sign out"}
         </button>
+        )}
       </div>
 
       {loading && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[var(--ink-400)]">
           <RefreshCw className="h-3 w-3 animate-spin text-[var(--accent-600)]" />
-          fetching from Codex…
+          fetching provider status...
         </div>
       )}
 
-      {!loading && (err || !data?.account) && (
+      {!loading && isOpenRouter && data?.openRouter && (
+        <div className="mt-2 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--surface-sunken)] text-[var(--ink-500)]">
+              <UserIcon className="h-3 w-3" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[12.5px] font-medium text-[var(--ink-900)]">
+                OpenRouter API key
+              </p>
+              <p className="truncate text-[10.5px] text-[var(--ink-500)]">
+                {data.openRouter.apiKeyConfigured ? "configured" : "missing"}
+              </p>
+            </div>
+          </div>
+          <div className="space-y-1 rounded-md bg-[var(--surface-sunken)] px-2 py-1.5 text-[10.5px] text-[var(--ink-600)]">
+            <p className="truncate">
+              <span className="font-medium text-[var(--ink-800)]">Model:</span>{" "}
+              {data.openRouter.model}
+            </p>
+            <p className="truncate">
+              <span className="font-medium text-[var(--ink-800)]">Endpoint:</span>{" "}
+              {data.openRouter.baseUrl}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!loading && !isOpenRouter && (err || !data?.account) && (
         <p className="mt-1.5 text-[11px] text-[var(--ink-400)]">No data.</p>
       )}
 
-      {!loading && data?.account && (
+      {!loading && !isOpenRouter && data?.account && (
         <>
           <div className="mt-1.5 flex items-center gap-2">
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--surface-sunken)] text-[var(--ink-500)]">

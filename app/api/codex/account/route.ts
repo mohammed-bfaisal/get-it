@@ -18,10 +18,21 @@ import {
   type CodexAccountInfo,
   type CodexRateLimits,
 } from "@/lib/codex-account";
+import { getAiProvider, getOpenRouterRuntimeInfo } from "@/lib/codex";
 
 export const runtime = "nodejs";
 
 export async function GET() {
+  const provider = getAiProvider();
+  if (provider === "openrouter") {
+    return NextResponse.json({
+      provider,
+      openRouter: getOpenRouterRuntimeInfo(),
+      account: null,
+      rateLimits: null,
+    });
+  }
+
   const account: CodexAccountInfo | null = (() => {
     try {
       return readAccountInfo();
@@ -35,5 +46,5 @@ export async function GET() {
   } catch {
     limits = null;
   }
-  return NextResponse.json({ account, rateLimits: limits });
+  return NextResponse.json({ provider, account, rateLimits: limits });
 }

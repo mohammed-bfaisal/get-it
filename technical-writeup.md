@@ -28,7 +28,7 @@ upload  ─► quality gate (model-free) ─► pdfjs-dist extracts text + glyph
                   ◄── interactions since the last pass
 ```
 
-Persistent state is a tree of plain JSON files under one OS-native user-data directory. There is no database, no hosted backend, no shared key pool, no analytics SDK. Every model call is an `@openai/codex-sdk` invocation against the end user's own ChatGPT account.
+Persistent state is a tree of plain JSON files under one OS-native user-data directory. There is no database, no hosted backend, no shared key pool, no analytics SDK. Model calls route through one local transport wrapper: Codex CLI by default, or OpenRouter when `GETIT_AI_PROVIDER=openrouter` or `OPENROUTER_API_KEY` is configured.
 
 ## Code map
 
@@ -54,7 +54,7 @@ app/                       Next.js App Router pages + API routes
     tags/[docId]/          server-owned tag store: GET / POST active-tag / etc.
     jobs/detect/[docId]    POST → kicks the batched concept-detection job for a doc
     jobs/viz/[docId]       POST → kicks per-tag viz-spec generation
-    chat/[docId]           POST → chat turn on a native Codex thread (start / resume)
+    chat/[docId]           POST → provider-aware chat turn (Codex thread or OpenRouter local-history rebuild)
     flashcards/[docId]     POST generate / rate / end (triggers scheduleEvaluation)
     quizzes/[docId]        POST generate / answer / end (triggers scheduleEvaluation)
     feynman/[docId]        POST start / explain (triggers scheduleEvaluation)
@@ -84,13 +84,14 @@ lib/                       framework-agnostic helpers
 
 ## The agent layer
 
-Every call to OpenAI funnels through [`lib/codex.ts`](lib/codex.ts). The stateless workhorse is `runJson(prompt, outputSchema, opts)`; the chat tool additionally uses `runJsonInThread(...)`, which **starts or resumes a native Codex thread** so a multi-turn conversation transmits the document once and each follow-up turn carries only the new message. Both paths share the same client, sandbox, schema enforcement, and error handling. The helper:
+Every model call funnels through [`lib/codex.ts`](lib/codex.ts). The stateless workhorse is `runJson(prompt, outputSchema, opts)`; the chat tool additionally uses `runJsonInThread(...)`. In Codex mode that starts or resumes a native Codex thread so a multi-turn conversation transmits the document once and each follow-up turn carries only the new message. In OpenRouter mode the transport uses `/api/v1/chat/completions` with JSON-schema structured output, and chat rebuilds from local history because OpenRouter requests are stateless. Both paths share schema enforcement and error handling. The helper:
 
-1. Lazily initialises one `Codex` client per process.
-2. Starts a fresh thread — or resumes a stored `threadId` — with `sandboxMode: "read-only"`, `approvalPolicy: "never"`, `skipGitRepoCheck: true`, and an explicit working directory under `<DATA_DIR>/codex-scratch`. The renderer never sees a turn that escaped its own working dir.
-3. Runs the turn against the supplied JSON Schema, retries once on parse failure, and returns the typed result.
-4. Catches every throw, classifies it into `auth_lost` / `rate_limit` / `binary_missing` / `generic`, and writes the result into a process-local **health mailbox**. The renderer polls `/api/codex/health` to render a banner. Rate-limit retry deadlines are extracted from the error message when present.
-5. Short-circuits future calls while a rate-limit window is still active so a chatty UI cannot burn a hundred wasted calls.
+1. Selects the active provider from `GETIT_AI_PROVIDER`, `GETIT_LLM_PROVIDER`, or the presence of `OPENROUTER_API_KEY`.
+2. In Codex mode, lazily initialises one `Codex` client per process and starts/resumes threads with `sandboxMode: "read-only"`, `approvalPolicy: "never"`, `skipGitRepoCheck: true`, and an explicit working directory under `<DATA_DIR>/codex-scratch`.
+3. In OpenRouter mode, sends a server-side bearer-key request to `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`) with `response_format: { type: "json_schema" }`, `provider.require_parameters: true`, and response-healing enabled.
+4. Runs the turn against the supplied JSON Schema, retries once on parse failure, and returns the typed result.
+5. Catches every throw, classifies it into `auth_lost` / `rate_limit` / `binary_missing` / `generic`, and writes the result into a process-local **health mailbox**. The renderer polls `/api/codex/health` to render a provider-aware banner. Rate-limit retry deadlines are extracted from the error message or `Retry-After` header when present.
+6. Short-circuits future calls while a rate-limit window is still active so a chatty UI cannot burn a hundred wasted calls.
 
 Nine prompts live behind that transport:
 
@@ -153,7 +154,7 @@ A rate-limit hit inside an evaluator pass schedules a `setTimeout` for `retryAt 
 
 The four tools are deliberately small and deliberately different. Each provides a distinct evidence type.
 
-- **Chat.** Multi-turn, multi-thread, scoped to one document. The first turn opens a native Codex thread seeded with the knowledge-graph node list and the full document text; later turns resume that thread (by stored `threadId`) and send only the new message, so the document is transmitted once per conversation instead of re-injected on every reply. The student can chat freely across as many turns as they like; a single KG re-evaluation runs when they leave the Chat tab.
+- **Chat.** Multi-turn, multi-thread, scoped to one document. In Codex mode the first turn opens a native Codex thread seeded with the knowledge-graph node list and the full document text; later turns resume that thread (by stored `threadId`) and send only the new message. In OpenRouter mode there is no persisted provider thread, so the route rebuilds the prompt from the local document context and chat history each turn. The student can chat freely across as many turns as they like; a single KG re-evaluation runs when they leave the Chat tab.
 
 - **Flashcards.** Open-recall under self-grade. The student picks a topic (or "all"), Codex generates a 4–10 card deck, the student optionally types their answer, reveals, and self-grades 1–4 (Again / Hard / Good / Easy, the FSRS convention). Ratings are recorded per card; closing a deck triggers an evaluator pass.
 
@@ -211,21 +212,21 @@ Two things hang off the mailbox:
 
 2. **The kg-evaluator queue.** Hitting a rate-limit inside an evaluator pass schedules a `setTimeout` for `retryAt + 500 ms` that re-fires `scheduleEvaluation(docId)`. The build agent does the same: it leaves the KG in `status: "building"` instead of erroring out so the badge keeps spinning and the next attempt picks up cleanly. Tool routes (chat / flashcards / quizzes / Feynman) preserve the work-context journal up to the failure point so the student can re-send the same action once the banner clears: no lost messages, no orphan card ratings, no half-finished Feynman session.
 
-`runJson` also short-circuits future Codex calls while a rate-limit window is still active. A chatty UI cannot burn a hundred wasted calls hoping the next one succeeds.
+`runJson` also short-circuits future model calls while a rate-limit window is still active. A chatty UI cannot burn a hundred wasted calls hoping the next one succeeds.
 
 ## Bring-your-own-account as an architectural choice
 
-The decision to drive every agent through the **user's own ChatGPT login over the official Codex CLI** is the choice that shapes the whole product. It is not cost-cutting and not a missing feature; it is a deliberate boundary.
+The decision to drive every agent through the **user's own model account** is the choice that shapes the whole product. The default path is ChatGPT/OpenAI through the official Codex CLI; this fork also supports OpenRouter via a server-side API key. It is not cost-cutting and not a missing feature; it is a deliberate boundary.
 
-There is no server-side OpenAI key, no shared pool of credits, and no app-side metering of model usage. The Electron shell bundles the Codex CLI binary per platform/arch. The first-launch wizard spawns `codex login` so the user authenticates against OpenAI directly. Every subsequent `codex exec` call runs against that account at whatever tier the user pays for. The app sees the same auth state Codex sees: a successful login, a rate-limit window, an expired token. Nothing more.
+There is no shared pool of credits and no app-side metering of model usage. In Codex mode, the Electron shell bundles the Codex CLI binary per platform/arch and the first-launch wizard spawns `codex login` so the user authenticates against OpenAI directly. In OpenRouter mode, the app skips that wizard and reads `OPENROUTER_API_KEY` only inside the local server process. The browser never receives the key.
 
 Three properties follow.
 
-1. **No second subscription, ever.** Other AI-study tools layer a marked-up fee on top of an API key the vendor holds. Get It. cannot do that, because it never holds the key in the first place. ChatGPT Plus is the practical floor for sustained study sessions; the free tier signs in but its Codex allowance is intentionally small. Higher tiers give more headroom in the exact same flow.
+1. **No second subscription, ever.** Other AI-study tools layer a marked-up fee on top of an API key the vendor holds. Get It. cannot do that, because the user pays Codex/OpenAI or OpenRouter directly.
 
 2. **No data resale and no transit-stage intermediary.** Because we never proxy the model traffic through our infrastructure, there is no Get It. infrastructure for that traffic to flow through. Work-context journals, knowledge graphs, and per-doc folders all live under the user-data directory on local disk. There is no upload step, no opt-in cloud sync, no analytics SDK. "Download your data" is a one-click affordance, but the more honest framing is that there is nothing else *to* download.
 
-3. **The transport is replaceable.** Codex CLI is one of several ways the app could speak to a model. We ship it today because it has the best ergonomics around per-tier login, its bundled binary is small, the official SDK gives us schema-typed responses without DIY enforcement, and it is the only path through which a ChatGPT Plus account can drive a developer-facing CLI without an extra API-key purchase. If a comparable bring-your-own-account transport for another provider appears, `runJson` is the single touchpoint that needs to change.
+3. **The transport is replaceable.** Codex CLI and OpenRouter both sit behind `runJson`. Codex keeps the best ergonomics around per-tier ChatGPT login; OpenRouter gives a direct API-key path with model selection through `OPENROUTER_MODEL`.
 
 The same property protects the project legally. **Get It. is not affiliated with OpenAI, not endorsed by OpenAI, not sponsored by OpenAI**, and not a derivative work of any closed-source OpenAI software; it is an independent application that interoperates with the publicly released Codex CLI and uses the end user's own credentials. The student's use of OpenAI's models through Get It. is governed by OpenAI's own Terms of Use, Usage Policies, and Privacy Policy. Those documents are authoritative.
 
@@ -289,7 +290,7 @@ Get It. was built in 24 hours at **GDG AI Hack 2026, Milan**, for the **Braynr**
 
 The hackathon submission lived at commit `277ec43` and contained the core architecture this writeup describes: the visualizer pipeline with all five renderer types, the knowledge-graph build agent, the four-axis evaluator, the chat / flashcards / Feynman tools, and the work-context journal. Two design decisions that look obvious in hindsight come straight from the time constraint:
 
-- **`new Function` for the LLM-emitted JS** was the only sandbox we could plausibly ship in 24 hours. We documented it as a defense against LLM mistakes rather than adversarial input; the boundary has held up because the bring-your-own-account model means the user is running their own Codex calls against their own PDFs.
+- **`new Function` for the LLM-emitted JS** was the only sandbox we could plausibly ship in 24 hours. We documented it as a defense against LLM mistakes rather than adversarial input; the boundary has held up because the bring-your-own-account model means the user is running their own model calls against their own PDFs.
 - **Filesystem-only persistence**. Spinning up a database under a hackathon clock would have eaten the time we needed for the evaluator. The JSON-files-under-a-data-dir layout was a deadline call. It then turned out to be the right call once we added the desktop shell: the same files are now what the auto-update flow preserves across version bumps, and the same files are what the user downloads in a click.
 
 Everything beyond `277ec43` is post-hackathon polish that turned the demo into a shipping product. Roughly chronological:

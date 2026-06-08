@@ -40,6 +40,23 @@ const zlib = require("node:zlib");
 
 const REQUIRED_CODEX_VERSION = "0.130.0";
 
+function configuredAiProvider() {
+  return String(
+    process.env.GETIT_AI_PROVIDER ||
+      process.env.GETIT_LLM_PROVIDER ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function usesOpenRouterProvider() {
+  const explicit = configuredAiProvider();
+  if (explicit === "openrouter") return true;
+  if (explicit === "codex") return false;
+  return !!String(process.env.OPENROUTER_API_KEY || "").trim();
+}
+
 // ── Platform target triple (same table as @openai/codex-sdk) ────────────
 const PLATFORM_PACKAGE_BY_TARGET = {
   "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
@@ -578,6 +595,9 @@ function onCodexStatusChange(cb) {
 // ── Public: run before main window opens ────────────────────────────────
 async function ensureCodexReady() {
   ensureIpcHandlers();
+  if (usesOpenRouterProvider()) {
+    return true;
+  }
   let status = refreshCodexStatus();
   if (status.binaryFound && status.versionOk && status.loggedIn) {
     return true;

@@ -23,6 +23,7 @@ import { AlertTriangle, KeyRound, Clock, Loader2, X } from "lucide-react";
 
 type Health = {
   ok: boolean;
+  provider?: "codex" | "openrouter";
   kind: "auth_lost" | "rate_limit" | "binary_missing" | "generic" | null;
   message: string | null;
   retryAt: number | null;
@@ -113,17 +114,23 @@ export default function CodexHealthBanner() {
   let title = "Codex hit a snag";
   let body: React.ReactNode = view.message ?? "";
   let action: React.ReactNode = null;
+  const isOpenRouter = view.provider === "openrouter";
 
   if (view.kind === "auth_lost" || view.kind === "binary_missing") {
     icon = <KeyRound className="h-4 w-4 text-rose-600" />;
-    title =
-      view.kind === "auth_lost"
+    title = isOpenRouter
+      ? "OpenRouter API key needed"
+      : view.kind === "auth_lost"
         ? "Codex needs a sign-in"
         : "Codex CLI is missing";
     body =
       view.kind === "auth_lost"
         ? "Your Codex session expired or signed out. Re-connect to keep working — your data is safe."
         : "We can't find the Codex CLI binary. Open the setup wizard to install it.";
+    if (isOpenRouter) {
+      body =
+        "Set OPENROUTER_API_KEY in .env.local or your shell environment, then restart Get It.";
+    }
     action = (
       <button
         type="button"
@@ -139,6 +146,7 @@ export default function CodexHealthBanner() {
         Re-connect
       </button>
     );
+    if (isOpenRouter) action = null;
   } else if (view.kind === "rate_limit") {
     icon = <Clock className="h-4 w-4 text-amber-600" />;
     const win =
@@ -149,7 +157,7 @@ export default function CodexHealthBanner() {
           : "current";
     if (view.retryAt) {
       const remaining = view.retryAt - Date.now();
-      title = `Codex ${win} limit reached`;
+      title = `${isOpenRouter ? "OpenRouter" : "Codex"} ${win} limit reached`;
       body = (
         <>
           You&apos;ve used your {win} quota. We&apos;ll resume in{" "}
@@ -158,13 +166,13 @@ export default function CodexHealthBanner() {
         </>
       );
     } else {
-      title = `Codex ${win} limit reached`;
+      title = `${isOpenRouter ? "OpenRouter" : "Codex"} ${win} limit reached`;
       body =
         "You've hit your usage quota. Try again later — your work is saved.";
     }
   } else {
     icon = <AlertTriangle className="h-4 w-4 text-amber-600" />;
-    title = "Last Codex call failed";
+    title = isOpenRouter ? "Last OpenRouter call failed" : "Last Codex call failed";
     body = view.message ?? "Unknown error. Try again.";
   }
 

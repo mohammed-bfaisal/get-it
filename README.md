@@ -58,22 +58,22 @@ After every completed session the **evaluator** agent reads the journal end-to-e
 
 The four numbers are the difference between a study app and a measurement instrument.
 
-## Bring your own ChatGPT
+## Bring your own AI account
 
 The AI side of Get It. has no business model layered on top.
 
-You sign in once with the ChatGPT account you already pay for (or an OpenAI API key) through the official Codex CLI. Every agent inside the app runs against your own tier. There is no Get It. server, no shared key pool, no per-message metering, no "AI credits" wallet, no second subscription, and no plan to ever ship one.
+By default you sign in once with the ChatGPT account you already pay for (or an OpenAI API key) through the official Codex CLI. This fork can also run every agent through your own OpenRouter API key by setting `GETIT_AI_PROVIDER=openrouter` and `OPENROUTER_API_KEY` in `.env.local` or your shell. There is no Get It. server, no shared key pool, no per-message metering, no "AI credits" wallet, and no second subscription controlled by the app.
 
-- **You pay for AI once.** ChatGPT Plus, Pro, Team, Enterprise, or Edu covers everything Get It. does.
-- **Plus is the practical floor.** The free tier signs in but its Codex allowance is intentionally small. Plus and above give comfortable session headroom in the same flow.
+- **You pay the provider directly.** Use ChatGPT/Codex or OpenRouter with your own account and limits.
+- **OpenRouter is server-side only.** Keep `OPENROUTER_API_KEY` unprefixed; never put it in `NEXT_PUBLIC_*`.
 - **Your data stays yours.** No backend, no upload step, no analytics. The work-context journal is a single JSON file on your disk, downloadable in one click from the right-pane menu.
-- **Rate limits are OpenAI's.** When you hit one, the app shows a countdown banner and resumes the background work itself once the window clears.
+- **Rate limits are your provider's.** When the provider returns a retry window, the app shows a countdown banner and resumes the background work itself once the window clears.
 
 Other AI study apps wrap a marked-up subscription around a model API the vendor holds. Get It. wraps a study workflow around the access you already have.
 
 ## Install
 
-Get It. is a desktop app. Download the installer for your machine, double-click, sign in with the ChatGPT account you already use. Nothing else to buy.
+Get It. is a desktop app. Download the installer for your machine, double-click, and connect either Codex/ChatGPT or an OpenRouter API key. Nothing else to buy from the app.
 
 | Platform | Installer |
 |---|---|
@@ -86,7 +86,7 @@ Every release ships on the **[Releases](https://github.com/beltromatti/get-it/re
 
 ### First launch
 
-The setup wizard verifies the bundled Codex CLI, walks the OAuth sign-in, and refuses to open the main window until both gates are green. Then drop a PDF, or open one of the five bundled samples (anatomy, classical mechanics, Italian constitution, calculus, organic chemistry). Tags, chats, flashcard decks, quizzes, Feynman sessions, and the knowledge graph all stay on your computer.
+The setup wizard verifies the bundled Codex CLI, walks the OAuth sign-in, and refuses to open the main window until both gates are green. If `GETIT_AI_PROVIDER=openrouter` or `OPENROUTER_API_KEY` is present, the app skips that Codex gate and uses OpenRouter instead. Then drop a PDF, or open one of the five bundled samples (anatomy, classical mechanics, Italian constitution, calculus, organic chemistry). Tags, chats, flashcard decks, quizzes, Feynman sessions, and the knowledge graph all stay on your computer.
 
 ### Gatekeeper and SmartScreen
 
@@ -118,6 +118,16 @@ npm run dev    # builds the Next.js standalone bundle and opens it in Electron
 ```
 
 `npm run dev` exercises the full path: setup wizard, embedded server, IPC bridge. Re-run after edits.
+
+To use OpenRouter instead of the Codex CLI login, copy `.env.example` to `.env.local` and set:
+
+```bash
+GETIT_AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_MODEL=openai/gpt-4o-mini
+```
+
+OpenRouter mode uses structured JSON-schema responses through `/api/v1/chat/completions`. Chat is rebuilt from the local per-document history on each turn because OpenRouter does not persist Codex-style thread IDs.
 
 For browser-side hot reload:
 
