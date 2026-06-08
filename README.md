@@ -129,6 +129,8 @@ OPENROUTER_MODEL=openai/gpt-4o-mini
 
 OpenRouter mode uses structured JSON-schema responses through `/api/v1/chat/completions`. Chat is rebuilt from the local per-document history on each turn because OpenRouter does not persist Codex-style thread IDs.
 
+Personal-use note: this OpenRouter setup is currently meant for a single-user local install where you control the machine and the key. If this ever becomes a shared or distributed build, move key entry into a local settings screen backed by OS credential storage instead of relying on shell or `.env.local` secrets.
+
 For browser-side hot reload:
 
 ```bash
